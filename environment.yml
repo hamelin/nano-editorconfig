@@ -5,6 +5,8 @@ dependencies:
   - setuptools
   - wheel
   - twine
+  - rfc3986
+  - keyring
   - pytest
   - mypy
   - flake8
