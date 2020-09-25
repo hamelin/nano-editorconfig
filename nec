@@ -1,8 +1,10 @@
 #!python
 import argparse as ap
 from copy import copy
+import itertools as it
 import os
 import pathlib as pl
+import re
 import subprocess as sp
 import sys
 import tempfile as tf
@@ -11,34 +13,110 @@ from typing import *
 from nano_editorconfig import iter_rc_file
 
 
-def parse_args() -> Tuple[List[str], Optional[pl.Path], List[pl.Path]]:
-    print("*** IMPLEMENT THIS PROPERLY ***", file=sys.stderr)
-    path_to_edit = None
-    if len(sys.argv) > 1:
-        path_to_edit = pl.Path(sys.argv[-1])
-    return sys.argv, path_to_edit, [pl.Path("/etc/nanorc"), pl.Path("~/.nanorc")]
+def parse_nano_help(nano: str) -> Tuple[str, str]:
+    nano_help, _ = sp.Popen(["nano", "--help"], stdout=sp.PIPE).communicate()
+    banner, desc_options = re.split(r"\s+Option\s+Long option\s+Meaning\n", str(nano_help, encoding="utf-8"))
+    return banner, desc_options
+
+
+def process_nano_args(desc_options: str, parser: ap.ArgumentParser) -> None:
+    for line_option in desc_options.split("\n"):
+        try:
+            opt_short, opt_long, opt_help = re.split(r"\s{2,}", line_option.strip())
+        except ValueError:
+            # Empty line, or non-option line; ignore.
+            continue
+        if opt_short == "-h":
+            continue
+
+        if "=" in opt_long:
+            opt_short, _ = opt_short.split()
+            opt_long, metavar = opt_long.split("=")
+            action = "store"
+            opts = {"metavar": metavar}
+        else:
+            action = "store_true"
+            opts = {}
+        if opt_short == "-f":
+            action = "append"
+
+        parser.add_argument(opt_short, opt_long, action=action, help=opt_help, **opts)  # type: ignore
+
+
+def parse_args(nano: str) -> ap.Namespace:
+    banner, desc_options = parse_nano_help(nano)
+    banner = re.sub(r"Usage:\s+(\S+)(\s+)", f"{pl.Path(sys.argv[0]).name} \2", banner)
+    parser = ap.ArgumentParser(usage=banner)
+    parser.add_argument("positions_files", nargs="*", metavar="Files to edit")
+    process_nano_args(desc_options, parser)
+    return parser.parse_args()
+
+
+def get_path_to_edit(args: ap.Namespace) -> Optional[pl.Path]:
+    if len(args.positions_files) > 0:
+        path_to_edit = pl.Path(args.positions_files[0])
+        if len(args.positions_files) >= 2 and args.positions_files[0].startswith("+"):
+            path_to_edit = pl.Path(args.positions_files[1])
+        return path_to_edit
+    return None
+
+
+def get_rc_base(args: ap.Namespace) -> List[pl.Path]:
+    # The usual default, which will be used if nothing more clever can be figured out.
+    paths = ["/etc/nanorc", "~/.nanorc", "~/.config/nano/nanorc"]
+    nanorc = os.getenv("NANORC")
+
+    if args.rcfile:
+        paths = args.rcfile
+    elif nanorc:
+        paths = nanorc.split(":")
+    else:
+        cmd_nano = sp.run("command -v nano", shell=True, stdout=sp.PIPE, stderr=sp.DEVNULL)
+        if cmd_nano.returncode == 0:
+            path_nano = str(cmd_nano.stdout, encoding="utf-8")
+            cmd_strings = sp.run(["strings", path_nano], shell=False, stdout=sp.PIPE, stderr=sp.DEVNULL)
+            if cmd_strings.returncode == 0:
+                strings_nano = str(cmd_strings.stdout, encoding="utf-8").split("\n")
+                paths_nanorc = [s for s in strings_nano if "/" in s and "nanorc" in s]
+                paths_sys_and_user = {
+                    is_: list(ipaths)
+                    for is_, ipaths in it.groupby(paths_nanorc, lambda s: "." in s)
+                }
+                paths = paths_sys_and_user[False] + [f"~{p}" for p in paths_sys_and_user[True]]
+
+    return [pl.Path(p).expanduser() for p in paths]
+
+
+def rewrite_nano_args(args: ap.Namespace) -> List[str]:
+    def rewrite_option(name, value) -> str:
+        if name in {"rcfile", "positions_files"}:
+            return ""
+        elif value is True:
+            return f"--{name}"
+        elif value:
+            return f"--{name}={value}"
+        else:
+            return ""
+
+    options_rewritten = [rewrite_option(n, v) for n, v in vars(args).items()]
+    return [o for o in options_rewritten if o] + args.positions_files
 
 
 if __name__ == "__main__":
-    if any(opt in sys.argv for opt in ["-h", "--help"]):
-        print(f"""\
-Usage: {sys.argv[0]}
-
-Wrapper around GNU nano to enable EditorConfig features. Runs nano using an ad
-hoc RC file set up to apply EditorConfig settings. The file that drives the
-configuration is expected as *last* command line argument. Without any
-argument, nano is run normally.
-
-Note that if the -f or --rcfile nano options are used, this file is included
-by the prepared RC file; otherwise, the system's and user's RC files are
-included. The -f and --rcfile are the only options that are not passed on
-verbatim to nano.
-"""
-    )
-    args, path_to_edit, files_rc_base = parse_args()
-    fd, path_rc_file = tf.mkstemp(suffix=".nanorc")
-    with open(fd, "wb") as file_rc:
-        file_rc.writelines(bytes(line, encoding="utf-8") + b"\n" for line in iter_rc_file(path_to_edit, files_rc_base))
     nano = os.getenv("NANO") or "nano"
-    args_nano = [nano, "-f", path_rc_file] + args[1:]
+    args = parse_args(nano)
+    path_to_edit = get_path_to_edit(args)
+    files_rc_base = get_rc_base(args)
+
+    args_nano = [nano]
+    if not args.ignorercfiles:
+        fd, path_rc_file = tf.mkstemp(suffix=".nanorc")
+        with open(fd, "wb") as file_rc:
+            file_rc.writelines(
+                bytes(line, encoding="utf-8") + b"\n"
+                for line in iter_rc_file(path_to_edit, files_rc_base)
+            )
+        args_nano.append(f"--rcfile={path_rc_file}")
+
+    args_nano += rewrite_nano_args(args)
     os.execvp(nano, args_nano)
