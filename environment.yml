@@ -1,0 +1,13 @@
+name: nano-editorconfig
+dependencies:
+  - python=3
+  - pip
+  - setuptools
+  - wheel
+  - twine
+  - pytest
+  - mypy
+  - flake8
+  - pip:
+      - -e .
+      - editorconfig

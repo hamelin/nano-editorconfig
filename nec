@@ -1,0 +1,44 @@
+#!python
+import argparse as ap
+from copy import copy
+import os
+import pathlib as pl
+import subprocess as sp
+import sys
+import tempfile as tf
+from typing import *
+
+from nano_editorconfig import iter_rc_file
+
+
+def parse_args() -> Tuple[List[str], Optional[pl.Path], List[pl.Path]]:
+    print("*** IMPLEMENT THIS PROPERLY ***", file=sys.stderr)
+    path_to_edit = None
+    if len(sys.argv) > 1:
+        path_to_edit = pl.Path(sys.argv[-1])
+    return sys.argv, path_to_edit, [pl.Path("/etc/nanorc"), pl.Path("~/.nanorc")]
+
+
+if __name__ == "__main__":
+    if any(opt in sys.argv for opt in ["-h", "--help"]):
+        print(f"""\
+Usage: {sys.argv[0]}
+
+Wrapper around GNU nano to enable EditorConfig features. Runs nano using an ad
+hoc RC file set up to apply EditorConfig settings. The file that drives the
+configuration is expected as *last* command line argument. Without any
+argument, nano is run normally.
+
+Note that if the -f or --rcfile nano options are used, this file is included
+by the prepared RC file; otherwise, the system's and user's RC files are
+included. The -f and --rcfile are the only options that are not passed on
+verbatim to nano.
+"""
+    )
+    args, path_to_edit, files_rc_base = parse_args()
+    fd, path_rc_file = tf.mkstemp(suffix=".nanorc")
+    with open(fd, "wb") as file_rc:
+        file_rc.writelines(bytes(line, encoding="utf-8") + b"\n" for line in iter_rc_file(path_to_edit, files_rc_base))
+    nano = os.getenv("NANO") or "nano"
+    args_nano = [nano, "-f", path_rc_file] + args[1:]
+    os.execvp(nano, args_nano)
