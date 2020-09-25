@@ -7,7 +7,7 @@ with open("README.md", "rt") as file:
 
 setup(
     name="nano-editorconfig",
-    version="1.0",
+    version="1.0.1",
     packages=find_packages(),
     scripts=["nec"],
     author="Benoit Hamelin",
